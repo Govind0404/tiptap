@@ -20,3 +20,4 @@ Add a first-class Track Changes (Suggest Edits) feature to Tiptap. When enabled,
 - New package file: `packages/extension-track-changes/src/track-changes.ts` exporting default `TrackChanges`.
 - Editor commands available with the exact names above.
 - Getter exposed as an Editor instance method (not a command): `editor.getChanges(params?: { from?: number; to?: number }): Array<{ id: string } & Record<string, unknown>>`.
+  - Range filtering semantics: positions use TipTap/ProseMirror document positions. Filtering applies over a half‑open interval [from, to): start is inclusive, end is exclusive. A change is included if any part of its current mapped range intersects [from, to). If `from`/`to` are omitted, all suggestions are returned. Example: `[from=1, to=docEnd)` selects the whole document.
