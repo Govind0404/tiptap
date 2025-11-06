@@ -1,0 +1,202 @@
+import { Editor } from '@tiptap/core'
+import Document from '@tiptap/extension-document'
+import Paragraph from '@tiptap/extension-paragraph'
+import Text from '@tiptap/extension-text'
+import Bold from '@tiptap/extension-bold'
+import CodeBlock from '@tiptap/extension-code-block'
+import { Table, TableCell, TableHeader, TableRow } from '@tiptap/extension-table'
+// Intentional import – will fail until implemented
+import TrackChanges from '@tiptap/extension-track-changes'
+// Optional collab test
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore
+import Collaboration from '@tiptap/extension-collaboration'
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore
+import * as Y from 'yjs'
+
+describe('extension-track-changes (Suggest Edits)', () => {
+  const editorElClass = 'tiptap'
+  let editor: Editor | null = null
+
+  const createEditorEl = () => {
+    const el = document.createElement('div')
+    el.classList.add(editorElClass)
+    document.body.appendChild(el)
+    return el
+  }
+  const getEditorEl = () => document.querySelector(`.${editorElClass}`)
+
+  afterEach(() => {
+    editor?.destroy()
+    getEditorEl()?.remove()
+    editor = null
+  })
+
+  it('exposes commands; insertions/deletions render as <ins>/<del> with data attributes', () => {
+    editor = new Editor({
+      element: createEditorEl(),
+      extensions: [Document, Text, Paragraph, TrackChanges],
+      content: '<p>Hello world</p>',
+    })
+
+    // Commands exist
+    // @ts-expect-error - extension augments commands
+    expect(typeof editor.commands.startSuggesting).to.eq('function')
+    // @ts-expect-error
+    expect(typeof editor.commands.stopSuggesting).to.eq('function')
+    // @ts-expect-error
+    expect(typeof editor.commands.acceptChange).to.eq('function')
+    // @ts-expect-error
+    expect(typeof editor.commands.rejectChange).to.eq('function')
+    // @ts-expect-error
+    expect(typeof editor.commands.acceptAll).to.eq('function')
+    // @ts-expect-error
+    expect(typeof editor.commands.rejectAll).to.eq('function')
+
+    // Start suggesting and perform insert + delete
+    // @ts-expect-error
+    editor.commands.startSuggesting({ userId: 'u1', userName: 'Alice' })
+    editor.chain().focus().insertContent('!').run()
+
+    // Delete last char of Hello (simulate) by deleting range
+    // place selection after "Hello" then delete previous char
+    const afterHelloPos = 1 + 1 + 5
+    // @ts-expect-error - internal API acceptable for tests
+    editor.commands.setTextSelection({ from: afterHelloPos, to: afterHelloPos })
+    // @ts-expect-error
+    editor.commands.deleteRange({ from: afterHelloPos - 1, to: afterHelloPos })
+
+    const html = editor.getHTML()
+    expect(html).to.contain('<ins')
+    expect(html).to.contain('<del')
+    expect(html).to.contain('data-change-id=')
+    expect(html).to.contain('data-author=')
+    expect(html).to.contain('data-ts=')
+  })
+
+  it('serialization round-trips deterministically between JSON and HTML', () => {
+    editor = new Editor({
+      element: createEditorEl(),
+      extensions: [Document, Text, Paragraph, TrackChanges],
+      content: '<p>Roundtrip</p>',
+    })
+    // @ts-expect-error
+    editor.commands.startSuggesting({ userId: 'u1' })
+    editor.chain().focus().insertContent('!').run()
+
+    const html1 = editor.getHTML()
+    const json1 = editor.getJSON()
+
+    const editor2 = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: html1 })
+    const html2 = editor2.getHTML()
+    expect(html2).to.contain('<ins')
+
+    editor2.destroy()
+    const editor3 = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: json1 })
+    const html3 = editor3.getHTML()
+    expect(html3).to.contain('<ins')
+    editor3.destroy()
+  })
+
+  it('accept/reject by ID and range queries via getChanges()', () => {
+    editor = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: '<p>ABC</p>' })
+    // @ts-expect-error
+    editor.commands.startSuggesting({ userId: 'u1' })
+    editor.chain().focus().insertContent('X').run()
+    // @ts-expect-error
+    const changes = editor.getChanges()
+    expect(Array.isArray(changes)).to.eq(true)
+    expect(changes.length).to.be.greaterThan(0)
+    const id = changes[0].id as string
+
+    // Accept by ID
+    // @ts-expect-error
+    editor.commands.acceptChange(id)
+    let html = editor.getHTML()
+    expect(html).to.not.contain('<ins')
+
+    // New change and reject by ID
+    // @ts-expect-error
+    editor.commands.startSuggesting({ userId: 'u1' })
+    editor.chain().insertContent('Y').run()
+    // @ts-expect-error
+    const changes2 = editor.getChanges({})
+    const id2 = changes2[0].id as string
+    // @ts-expect-error
+    editor.commands.rejectChange(id2)
+    html = editor.getHTML()
+    expect(html).to.not.contain('<ins')
+  })
+
+  it('rejectAll removes all pending suggestions', () => {
+    editor = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: '<p>ZZ</p>' })
+    // @ts-expect-error
+    editor.commands.startSuggesting({ userId: 'u1' })
+    editor.chain().focus().insertContent('1').insertContent('2').insertContent('3').run()
+    // @ts-expect-error
+    editor.commands.rejectAll()
+    const html = editor.getHTML()
+    expect(html).to.not.contain('<ins')
+    expect(html).to.not.contain('<del')
+  })
+
+  it('suggestions map across subsequent edits and keep stable IDs', () => {
+    editor = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: '<p>map</p>' })
+    // @ts-expect-error
+    editor.commands.startSuggesting({ userId: 'u1' })
+    editor.chain().focus().insertContent('A').run()
+    // @ts-expect-error
+    const before = editor.getChanges()
+    const id = before[0].id
+    // Perform unrelated edit at doc start
+    // @ts-expect-error
+    editor.commands.setTextSelection({ from: 1, to: 1 })
+    editor.chain().insertContent('#').run()
+    // @ts-expect-error
+    const after = editor.getChanges()
+    expect(after.find((c: any) => c.id === id)).to.not.eq(undefined)
+  })
+
+  it('handles overlapping edits and complex content (marks, code block, table)', () => {
+    editor = new Editor({
+      element: createEditorEl(),
+      extensions: [Document, Text, Paragraph, Bold, CodeBlock, Table.configure({ resizable: false }), TableRow, TableHeader, TableCell, TrackChanges],
+      content: '<p><strong>bold</strong> text</p><pre><code>code</code></pre><table><tbody><tr><td>cell</td></tr></tbody></table>',
+    })
+    // @ts-expect-error
+    editor.commands.startSuggesting({ userId: 'u1' })
+    // Insert inside bold
+    // @ts-expect-error
+    editor.commands.setTextSelection({ from: 6, to: 6 })
+    editor.chain().insertContent('*').run()
+    // Insert inside code block
+    // @ts-expect-error
+    editor.commands.setTextSelection({ from: editor.state.doc.content.size - 10, to: editor.state.doc.content.size - 10 })
+    editor.chain().insertContent('!').run()
+    const html = editor.getHTML()
+    expect(html).to.contain('<ins')
+    expect(html).to.contain('<strong>')
+    expect(html).to.contain('<pre')
+    expect(html).to.contain('<table')
+  })
+
+  it('is collaboration-ready: suggestions propagate via Yjs and preserve authorship', () => {
+    const ydoc = new Y.Doc()
+    const elA = createEditorEl()
+    const elB = createEditorEl()
+    const editorA = new Editor({ element: elA, extensions: [Document, Text, Paragraph, TrackChanges, Collaboration.configure({ document: ydoc })], content: '<p>collab</p>' })
+    const editorB = new Editor({ element: elB, extensions: [Document, Text, Paragraph, TrackChanges, Collaboration.configure({ document: ydoc })], content: '<p>collab</p>' })
+    // @ts-expect-error
+    editorA.commands.startSuggesting({ userId: 'u1', userName: 'Alice' })
+    editorA.chain().focus().insertContent('!').run()
+
+    const htmlA = editorA.getHTML()
+    const htmlB = editorB.getHTML()
+    expect(htmlA).to.contain('<ins')
+    expect(htmlB).to.contain('<ins')
+    expect(htmlB).to.contain('data-author="Alice"')
+
+    editorA.destroy(); editorB.destroy(); elA.remove(); elB.remove()
+  })
+})
