@@ -7,6 +7,9 @@ import CodeBlock from '@tiptap/extension-code-block'
 import { Table, TableCell, TableHeader, TableRow } from '@tiptap/extension-table'
 // Intentional import – will fail until implemented
 import TrackChanges from '@tiptap/extension-track-changes'
+import OrderedList from '@tiptap/extension-ordered-list'
+import BulletList from '@tiptap/extension-bullet-list'
+import ListItem from '@tiptap/extension-list-item'
 // Optional collab test
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
@@ -146,6 +149,21 @@ describe('extension-track-changes (Suggest Edits)', () => {
     expect(html).to.not.contain('<del')
   })
 
+  it('stopSuggesting disables tracking; subsequent edits are not wrapped in <ins>/<del>', () => {
+    editor = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: '<p>toggle</p>' })
+    // @ts-expect-error
+    editor.commands.startSuggesting({ userId: 'u1' })
+    editor.chain().focus().insertContent('!').run()
+    let html = editor.getHTML()
+    const beforeCount = (html.match(/<ins/g) || []).length
+    // @ts-expect-error
+    editor.commands.stopSuggesting()
+    editor.chain().insertContent('?').run()
+    html = editor.getHTML()
+    const afterCount = (html.match(/<ins/g) || []).length
+    expect(afterCount).to.eq(beforeCount)
+  })
+
   it('acceptAll accepts both insertion and deletion suggestions', () => {
     editor = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: '<p>test</p>' })
     // @ts-expect-error
@@ -283,6 +301,51 @@ describe('extension-track-changes (Suggest Edits)', () => {
     expect(html).to.contain('<strong>')
     expect(html).to.contain('<pre')
     expect(html).to.contain('<table')
+  })
+
+  it('handles list content (bullet/ordered) with suggestions intact', () => {
+    editor = new Editor({
+      element: createEditorEl(),
+      extensions: [Document, Text, Paragraph, BulletList, OrderedList, ListItem, TrackChanges],
+      content: '<ul><li>item1</li><li>item2</li></ul>',
+    })
+    // @ts-expect-error
+    editor.commands.startSuggesting({ userId: 'u1' })
+    // insert inside first list item
+    // @ts-expect-error
+    editor.commands.setTextSelection({ from: 1 + 1 + 2, to: 1 + 1 + 2 })
+    editor.chain().insertContent('*').run()
+    // delete inside second list item (approximate position near end)
+    // @ts-expect-error
+    editor.commands.setTextSelection({ from: editor.state.doc.content.size - 5, to: editor.state.doc.content.size - 4 })
+    // @ts-expect-error
+    editor.commands.deleteRange({ from: editor.state.doc.content.size - 5, to: editor.state.doc.content.size - 4 })
+    const html = editor.getHTML()
+    expect(html).to.contain('<ul')
+    expect(html).to.contain('<li')
+    expect(html).to.contain('<ins')
+    expect(html).to.contain('<del')
+  })
+
+  it('getChanges range filtering excludes out-of-range suggestions', () => {
+    editor = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: '<p>Range</p>' })
+    // @ts-expect-error
+    editor.commands.startSuggesting({ userId: 'u1' })
+    // insertion near start
+    // @ts-expect-error
+    editor.commands.setTextSelection({ from: 2, to: 2 })
+    editor.chain().insertContent('a').run()
+    // insertion near end
+    // @ts-expect-error
+    editor.commands.setTextSelection({ from: editor.state.doc.content.size, to: editor.state.doc.content.size })
+    editor.chain().insertContent('b').run()
+    // @ts-expect-error
+    const earlyOnly = editor.getChanges({ from: 2, to: 4 })
+    expect(earlyOnly.length).to.eq(1)
+    // pick a middle range that excludes both
+    // @ts-expect-error
+    const none = editor.getChanges({ from: 5, to: 6 })
+    expect(none.length).to.eq(0)
   })
 
   it('is collaboration-ready: suggestions propagate via Yjs and preserve authorship', () => {
