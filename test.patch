@@ -1,399 +1,400 @@
-
 diff --git a/test.sh b/test.sh
 new file mode 100755
 --- /dev/null
 +++ b/test.sh
 @@ -0,0 +19 @@
-#!/bin/bash
-set -euo pipefail
++#!/bin/bash
++set -euo pipefail
++
++case "${1:-}" in
++  base)
++    # Run a subset of existing tests that pass at the base commit
++    pnpm test -- --spec \
++      tests/cypress/integration/extensions/link.spec.ts \
++      tests/cypress/integration/markdown/manager.spec.ts
++    ;;
++  new)
++    # Run newly added tests that should fail before the feature is implemented
++    pnpm test -- --spec tests/cypress/integration/extensions/track-changes.spec.ts
++    ;;
++  *)
++    echo "Usage: ./test.sh {base|new}" >&2
++    exit 1
++    ;;
++esac
 
-case "" in
-  base)
-    # Run a subset of existing tests that pass at the base commit
-    pnpm test -- --spec \
-      tests/cypress/integration/extensions/link.spec.ts \
-      tests/cypress/integration/markdown/manager.spec.ts
-    ;;
-  new)
-    # Run newly added tests that should fail before the feature is implemented
-    pnpm test -- --spec tests/cypress/integration/extensions/track-changes.spec.ts
-    ;;
-  *)
-    echo "Usage: ./test.sh {base|new}" >&2
-    exit 1
-    ;;
-esac
 diff --git a/tests/cypress/integration/extensions/track-changes.spec.ts b/tests/cypress/integration/extensions/track-changes.spec.ts
 new file mode 100644
 --- /dev/null
 +++ b/tests/cypress/integration/extensions/track-changes.spec.ts
 @@ -0,0 +370 @@
-import { Editor } from '@tiptap/core'
-import Document from '@tiptap/extension-document'
-import Paragraph from '@tiptap/extension-paragraph'
-import Text from '@tiptap/extension-text'
-import Bold from '@tiptap/extension-bold'
-import CodeBlock from '@tiptap/extension-code-block'
-import { Table, TableCell, TableHeader, TableRow } from '@tiptap/extension-table'
-// Intentional import – will fail until implemented
-import TrackChanges from '@tiptap/extension-track-changes'
-import OrderedList from '@tiptap/extension-ordered-list'
-import BulletList from '@tiptap/extension-bullet-list'
-import ListItem from '@tiptap/extension-list-item'
-// Optional collab test
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore
-import Collaboration from '@tiptap/extension-collaboration'
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore
-import * as Y from 'yjs'
-
-describe('extension-track-changes (Suggest Edits)', () => {
-  const editorElClass = 'tiptap'
-  let editor: Editor | null = null
-
-  const createEditorEl = () => {
-    const el = document.createElement('div')
-    el.classList.add(editorElClass)
-    document.body.appendChild(el)
-    return el
-  }
-  const getEditorEl = () => document.querySelector(`.${editorElClass}`)
-
-  afterEach(() => {
-    editor?.destroy()
-    getEditorEl()?.remove()
-    editor = null
-  })
-
-  it('exposes commands; insertions/deletions render as <ins>/<del> with data attributes', () => {
-    editor = new Editor({
-      element: createEditorEl(),
-      extensions: [Document, Text, Paragraph, TrackChanges],
-      content: '<p>Hello world</p>',
-    })
-
-    // Commands exist
-    // @ts-expect-error - extension augments commands
-    expect(typeof editor.commands.startSuggesting).to.eq('function')
-    // @ts-expect-error
-    expect(typeof editor.commands.stopSuggesting).to.eq('function')
-    // @ts-expect-error
-    expect(typeof editor.commands.acceptChange).to.eq('function')
-    // @ts-expect-error
-    expect(typeof editor.commands.rejectChange).to.eq('function')
-    // @ts-expect-error
-    expect(typeof editor.commands.acceptAll).to.eq('function')
-    // @ts-expect-error
-    expect(typeof editor.commands.rejectAll).to.eq('function')
-
-    // Start suggesting and perform insert + delete
-    // @ts-expect-error
-    editor.commands.startSuggesting({ userId: 'u1', userName: 'Alice' })
-    editor.chain().focus().insertContent('!').run()
-
-    // Delete last char of Hello (simulate) by deleting range
-    // place selection after "Hello" then delete previous char
-    const afterHelloPos = 1 + 1 + 5
-    // @ts-expect-error - internal API acceptable for tests
-    editor.commands.setTextSelection({ from: afterHelloPos, to: afterHelloPos })
-    // @ts-expect-error
-    editor.commands.deleteRange({ from: afterHelloPos - 1, to: afterHelloPos })
-
-    const html = editor.getHTML()
-    expect(html).to.contain('<ins')
-    expect(html).to.contain('<del')
-    expect(html).to.contain('data-change-id=')
-    expect(html).to.contain('data-author=')
-    expect(html).to.contain('data-ts=')
-  })
-
-  it('serialization round-trips deterministically between JSON and HTML (preserves IDs)', () => {
-    editor = new Editor({
-      element: createEditorEl(),
-      extensions: [Document, Text, Paragraph, TrackChanges],
-      content: '<p>Roundtrip</p>',
-    })
-    // @ts-expect-error
-    editor.commands.startSuggesting({ userId: 'u1' })
-    editor.chain().focus().insertContent('!').run()
-
-    const html1 = editor.getHTML()
-    const json1 = editor.getJSON()
-    const idMatch = html1.match(/data-change-id=\"([^\"]+)/)
-    expect(!!idMatch).to.eq(true)
-    const firstId = idMatch ? idMatch[1] : ''
-
-    const editor2 = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: html1 })
-    const html2 = editor2.getHTML()
-    expect(html2).to.contain('<ins')
-    expect(html2).to.contain(`data-change-id=\"${firstId}`)
-
-    editor2.destroy()
-    const editor3 = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: json1 })
-    const html3 = editor3.getHTML()
-    expect(html3).to.contain('<ins')
-    expect(html3).to.contain(`data-change-id=\"${firstId}`)
-    editor3.destroy()
-  })
-
-  it('accept/reject by ID and range queries via getChanges()', () => {
-    editor = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: '<p>ABC</p>' })
-    // @ts-expect-error
-    editor.commands.startSuggesting({ userId: 'u1' })
-    editor.chain().focus().insertContent('X').run()
-    // @ts-expect-error
-    const changes = editor.getChanges()
-    expect(Array.isArray(changes)).to.eq(true)
-    expect(changes.length).to.be.greaterThan(0)
-    const id = changes[0].id as string
-
-    // Accept by ID
-    // @ts-expect-error
-    editor.commands.acceptChange(id)
-    let html = editor.getHTML()
-    expect(html).to.not.contain('<ins')
-
-    // New change and reject by ID
-    // @ts-expect-error
-    editor.commands.startSuggesting({ userId: 'u1' })
-    editor.chain().insertContent('Y').run()
-    // @ts-expect-error
-    const changes2 = editor.getChanges({})
-    const id2 = changes2[0].id as string
-    // @ts-expect-error
-    editor.commands.rejectChange(id2)
-    html = editor.getHTML()
-    expect(html).to.not.contain('<ins')
-  })
-
-  it('rejectAll removes all pending suggestions', () => {
-    editor = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: '<p>ZZ</p>' })
-    // @ts-expect-error
-    editor.commands.startSuggesting({ userId: 'u1' })
-    editor.chain().focus().insertContent('1').insertContent('2').insertContent('3').run()
-    // @ts-expect-error
-    editor.commands.rejectAll()
-    const html = editor.getHTML()
-    expect(html).to.not.contain('<ins')
-    expect(html).to.not.contain('<del')
-  })
-
-  it('stopSuggesting disables tracking; subsequent edits are not wrapped in <ins>/<del>', () => {
-    editor = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: '<p>toggle</p>' })
-    // @ts-expect-error
-    editor.commands.startSuggesting({ userId: 'u1' })
-    editor.chain().focus().insertContent('!').run()
-    let html = editor.getHTML()
-    const beforeCount = (html.match(/<ins/g) || []).length
-    // @ts-expect-error
-    editor.commands.stopSuggesting()
-    editor.chain().insertContent('?').run()
-    html = editor.getHTML()
-    const afterCount = (html.match(/<ins/g) || []).length
-    expect(afterCount).to.eq(beforeCount)
-  })
-
-  it('acceptAll accepts both insertion and deletion suggestions', () => {
-    editor = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: '<p>test</p>' })
-    // @ts-expect-error
-    editor.commands.startSuggesting({ userId: 'u1' })
-    // insert at end
-    // @ts-expect-error
-    editor.commands.setTextSelection({ from: editor.state.doc.content.size, to: editor.state.doc.content.size })
-    editor.chain().insertContent('X').run()
-    // delete the first character
-    // @ts-expect-error
-    editor.commands.setTextSelection({ from: 2, to: 3 })
-    // @ts-expect-error
-    editor.commands.deleteRange({ from: 2, to: 3 })
-    // @ts-expect-error
-    editor.commands.acceptAll()
-    const html2 = editor.getHTML()
-    expect(html2).to.not.contain('<ins')
-    expect(html2).to.not.contain('<del')
-  })
-
-  it('getChanges supports range filtering and returns only changes in [from,to)', () => {
-    editor = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: '<p>ABCD</p>' })
-    // @ts-expect-error
-    editor.commands.startSuggesting({ userId: 'u1' })
-    // insert near start
-    // @ts-expect-error
-    editor.commands.setTextSelection({ from: 1, to: 1 })
-    editor.chain().insertContent('x').run()
-    // insert near end
-    // @ts-expect-error
-    editor.commands.setTextSelection({ from: editor.state.doc.content.size, to: editor.state.doc.content.size })
-    editor.chain().insertContent('y').run()
-    // @ts-expect-error
-    const all = editor.getChanges()
-    expect(all.length).to.be.greaterThan(1)
-    // filter a small early range that should include only the first insertion
-    // @ts-expect-error
-    const early = editor.getChanges({ from: 1, to: 3 })
-    expect(early.length).to.eq(1)
-    expect(all.find((c: any) => c.id === early[0].id)).to.not.eq(undefined)
-  })
-
-  it('accept/reject works for deletion suggestions specifically', () => {
-    editor = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: '<p>DeleteMe</p>' })
-    // @ts-expect-error
-    editor.commands.startSuggesting({ userId: 'u1' })
-    // delete the substring "ete"
-    // @ts-expect-error
-    editor.commands.setTextSelection({ from: 6, to: 9 })
-    // @ts-expect-error
-    editor.commands.deleteRange({ from: 6, to: 9 })
-    let html2 = editor.getHTML()
-    expect(html2).to.contain('<del')
-    // @ts-expect-error
-    const delId = editor.getChanges()[0].id as string
-    // accept deletion -> <del> gone
-    // @ts-expect-error
-    editor.commands.acceptChange(delId)
-    html2 = editor.getHTML()
-    expect(html2).to.not.contain('<del')
-
-    // create another deletion and reject it
-    // @ts-expect-error
-    editor.commands.startSuggesting({ userId: 'u1' })
-    // @ts-expect-error
-    editor.commands.setTextSelection({ from: 3, to: 5 })
-    // @ts-expect-error
-    editor.commands.deleteRange({ from: 3, to: 5 })
-    html2 = editor.getHTML()
-    expect(html2).to.contain('<del')
-    // @ts-expect-error
-    const delId2 = editor.getChanges()[0].id as string
-    // @ts-expect-error
-    editor.commands.rejectChange(delId2)
-    html2 = editor.getHTML()
-    expect(html2).to.not.contain('<del')
-  })
-
-  it('overlapping suggestions: insert then delete a range including the inserted char; both remain distinct', () => {
-    editor = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: '<p>overlap</p>' })
-    // @ts-expect-error
-    editor.commands.startSuggesting({ userId: 'u1' })
-    // insert X after "ov"
-    // @ts-expect-error
-    editor.commands.setTextSelection({ from: 1 + 1 + 2, to: 1 + 1 + 2 })
-    editor.chain().insertContent('X').run()
-    // now delete a range that includes the newly inserted X (overlap)
-    // @ts-expect-error
-    editor.commands.deleteRange({ from: 1 + 1 + 2, to: 1 + 1 + 4 })
-    const html2 = editor.getHTML()
-    expect(html2).to.contain('<ins')
-    expect(html2).to.contain('<del')
-    // @ts-expect-error
-    const changes = editor.getChanges()
-    expect(changes.length).to.be.greaterThan(1)
-    const unique = new Set(changes.map((c: any) => c.id))
-    expect(unique.size).to.eq(changes.length)
-  })
-
-  it('suggestions map across subsequent edits and keep stable IDs', () => {
-    editor = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: '<p>map</p>' })
-    // @ts-expect-error
-    editor.commands.startSuggesting({ userId: 'u1' })
-    editor.chain().focus().insertContent('A').run()
-    // @ts-expect-error
-    const before = editor.getChanges()
-    const id = before[0].id
-    // Perform unrelated edit at doc start
-    // @ts-expect-error
-    editor.commands.setTextSelection({ from: 1, to: 1 })
-    editor.chain().insertContent('#').run()
-    // @ts-expect-error
-    const after = editor.getChanges()
-    expect(after.find((c: any) => c.id === id)).to.not.eq(undefined)
-  })
-
-  it('handles overlapping edits and complex content (marks, code block, table)', () => {
-    editor = new Editor({
-      element: createEditorEl(),
-      extensions: [Document, Text, Paragraph, Bold, CodeBlock, Table.configure({ resizable: false }), TableRow, TableHeader, TableCell, TrackChanges],
-      content: '<p><strong>bold</strong> text</p><pre><code>code</code></pre><table><tbody><tr><td>cell</td></tr></tbody></table>',
-    })
-    // @ts-expect-error
-    editor.commands.startSuggesting({ userId: 'u1' })
-    // Insert inside bold
-    // @ts-expect-error
-    editor.commands.setTextSelection({ from: 6, to: 6 })
-    editor.chain().insertContent('*').run()
-    // Insert inside code block
-    // @ts-expect-error
-    editor.commands.setTextSelection({ from: editor.state.doc.content.size - 10, to: editor.state.doc.content.size - 10 })
-    editor.chain().insertContent('!').run()
-    const html = editor.getHTML()
-    expect(html).to.contain('<ins')
-    expect(html).to.contain('<strong>')
-    expect(html).to.contain('<pre')
-    expect(html).to.contain('<table')
-  })
-
-  it('handles list content (bullet/ordered) with suggestions intact', () => {
-    editor = new Editor({
-      element: createEditorEl(),
-      extensions: [Document, Text, Paragraph, BulletList, OrderedList, ListItem, TrackChanges],
-      content: '<ul><li>item1</li><li>item2</li></ul>',
-    })
-    // @ts-expect-error
-    editor.commands.startSuggesting({ userId: 'u1' })
-    // insert inside first list item
-    // @ts-expect-error
-    editor.commands.setTextSelection({ from: 1 + 1 + 2, to: 1 + 1 + 2 })
-    editor.chain().insertContent('*').run()
-    // delete inside second list item (approximate position near end)
-    // @ts-expect-error
-    editor.commands.setTextSelection({ from: editor.state.doc.content.size - 5, to: editor.state.doc.content.size - 4 })
-    // @ts-expect-error
-    editor.commands.deleteRange({ from: editor.state.doc.content.size - 5, to: editor.state.doc.content.size - 4 })
-    const html = editor.getHTML()
-    expect(html).to.contain('<ul')
-    expect(html).to.contain('<li')
-    expect(html).to.contain('<ins')
-    expect(html).to.contain('<del')
-  })
-
-  it('getChanges range filtering excludes out-of-range suggestions', () => {
-    editor = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: '<p>Range</p>' })
-    // @ts-expect-error
-    editor.commands.startSuggesting({ userId: 'u1' })
-    // insertion near start
-    // @ts-expect-error
-    editor.commands.setTextSelection({ from: 2, to: 2 })
-    editor.chain().insertContent('a').run()
-    // insertion near end
-    // @ts-expect-error
-    editor.commands.setTextSelection({ from: editor.state.doc.content.size, to: editor.state.doc.content.size })
-    editor.chain().insertContent('b').run()
-    // @ts-expect-error
-    const earlyOnly = editor.getChanges({ from: 2, to: 4 })
-    expect(earlyOnly.length).to.eq(1)
-    // pick a middle range that excludes both
-    // @ts-expect-error
-    const none = editor.getChanges({ from: 5, to: 6 })
-    expect(none.length).to.eq(0)
-  })
-
-  it('is collaboration-ready: suggestions propagate via Yjs and preserve authorship', () => {
-    const ydoc = new Y.Doc()
-    const elA = createEditorEl()
-    const elB = createEditorEl()
-    const editorA = new Editor({ element: elA, extensions: [Document, Text, Paragraph, TrackChanges, Collaboration.configure({ document: ydoc })], content: '<p>collab</p>' })
-    const editorB = new Editor({ element: elB, extensions: [Document, Text, Paragraph, TrackChanges, Collaboration.configure({ document: ydoc })], content: '<p>collab</p>' })
-    // @ts-expect-error
-    editorA.commands.startSuggesting({ userId: 'u1', userName: 'Alice' })
-    editorA.chain().focus().insertContent('!').run()
-
-    const htmlA = editorA.getHTML()
-    const htmlB = editorB.getHTML()
-    expect(htmlA).to.contain('<ins')
-    expect(htmlB).to.contain('<ins')
-    expect(htmlB).to.contain('data-author="Alice"')
-
-    editorA.destroy(); editorB.destroy(); elA.remove(); elB.remove()
-  })
-})
++import { Editor } from '@tiptap/core'
++import Document from '@tiptap/extension-document'
++import Paragraph from '@tiptap/extension-paragraph'
++import Text from '@tiptap/extension-text'
++import Bold from '@tiptap/extension-bold'
++import CodeBlock from '@tiptap/extension-code-block'
++import { Table, TableCell, TableHeader, TableRow } from '@tiptap/extension-table'
++// Intentional import – will fail until implemented
++import TrackChanges from '@tiptap/extension-track-changes'
++import OrderedList from '@tiptap/extension-ordered-list'
++import BulletList from '@tiptap/extension-bullet-list'
++import ListItem from '@tiptap/extension-list-item'
++// Optional collab test
++// eslint-disable-next-line @typescript-eslint/ban-ts-comment
++// @ts-ignore
++import Collaboration from '@tiptap/extension-collaboration'
++// eslint-disable-next-line @typescript-eslint/ban-ts-comment
++// @ts-ignore
++import * as Y from 'yjs'
++
++describe('extension-track-changes (Suggest Edits)', () => {
++  const editorElClass = 'tiptap'
++  let editor: Editor | null = null
++
++  const createEditorEl = () => {
++    const el = document.createElement('div')
++    el.classList.add(editorElClass)
++    document.body.appendChild(el)
++    return el
++  }
++  const getEditorEl = () => document.querySelector(`.${editorElClass}`)
++
++  afterEach(() => {
++    editor?.destroy()
++    getEditorEl()?.remove()
++    editor = null
++  })
++
++  it('exposes commands; insertions/deletions render as <ins>/<del> with data attributes', () => {
++    editor = new Editor({
++      element: createEditorEl(),
++      extensions: [Document, Text, Paragraph, TrackChanges],
++      content: '<p>Hello world</p>',
++    })
++
++    // Commands exist
++    // @ts-expect-error - extension augments commands
++    expect(typeof editor.commands.startSuggesting).to.eq('function')
++    // @ts-expect-error
++    expect(typeof editor.commands.stopSuggesting).to.eq('function')
++    // @ts-expect-error
++    expect(typeof editor.commands.acceptChange).to.eq('function')
++    // @ts-expect-error
++    expect(typeof editor.commands.rejectChange).to.eq('function')
++    // @ts-expect-error
++    expect(typeof editor.commands.acceptAll).to.eq('function')
++    // @ts-expect-error
++    expect(typeof editor.commands.rejectAll).to.eq('function')
++
++    // Start suggesting and perform insert + delete
++    // @ts-expect-error
++    editor.commands.startSuggesting({ userId: 'u1', userName: 'Alice' })
++    editor.chain().focus().insertContent('!').run()
++
++    // Delete last char of Hello (simulate) by deleting range
++    // place selection after "Hello" then delete previous char
++    const afterHelloPos = 1 + 1 + 5
++    // @ts-expect-error - internal API acceptable for tests
++    editor.commands.setTextSelection({ from: afterHelloPos, to: afterHelloPos })
++    // @ts-expect-error
++    editor.commands.deleteRange({ from: afterHelloPos - 1, to: afterHelloPos })
++
++    const html = editor.getHTML()
++    expect(html).to.contain('<ins')
++    expect(html).to.contain('<del')
++    expect(html).to.contain('data-change-id=')
++    expect(html).to.contain('data-author=')
++    expect(html).to.contain('data-ts=')
++  })
++
++  it('serialization round-trips deterministically between JSON and HTML (preserves IDs)', () => {
++    editor = new Editor({
++      element: createEditorEl(),
++      extensions: [Document, Text, Paragraph, TrackChanges],
++      content: '<p>Roundtrip</p>',
++    })
++    // @ts-expect-error
++    editor.commands.startSuggesting({ userId: 'u1' })
++    editor.chain().focus().insertContent('!').run()
++
++    const html1 = editor.getHTML()
++    const json1 = editor.getJSON()
++    const idMatch = html1.match(/data-change-id=\"([^\"]+)/)
++    expect(!!idMatch).to.eq(true)
++    const firstId = idMatch ? idMatch[1] : ''
++
++    const editor2 = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: html1 })
++    const html2 = editor2.getHTML()
++    expect(html2).to.contain('<ins')
++    expect(html2).to.contain(`data-change-id=\"${firstId}`)
++
++    editor2.destroy()
++    const editor3 = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: json1 })
++    const html3 = editor3.getHTML()
++    expect(html3).to.contain('<ins')
++    expect(html3).to.contain(`data-change-id=\"${firstId}`)
++    editor3.destroy()
++  })
++
++  it('accept/reject by ID and range queries via getChanges()', () => {
++    editor = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: '<p>ABC</p>' })
++    // @ts-expect-error
++    editor.commands.startSuggesting({ userId: 'u1' })
++    editor.chain().focus().insertContent('X').run()
++    // @ts-expect-error
++    const changes = editor.getChanges()
++    expect(Array.isArray(changes)).to.eq(true)
++    expect(changes.length).to.be.greaterThan(0)
++    const id = changes[0].id as string
++
++    // Accept by ID
++    // @ts-expect-error
++    editor.commands.acceptChange(id)
++    let html = editor.getHTML()
++    expect(html).to.not.contain('<ins')
++
++    // New change and reject by ID
++    // @ts-expect-error
++    editor.commands.startSuggesting({ userId: 'u1' })
++    editor.chain().insertContent('Y').run()
++    // @ts-expect-error
++    const changes2 = editor.getChanges({})
++    const id2 = changes2[0].id as string
++    // @ts-expect-error
++    editor.commands.rejectChange(id2)
++    html = editor.getHTML()
++    expect(html).to.not.contain('<ins')
++  })
++
++  it('rejectAll removes all pending suggestions', () => {
++    editor = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: '<p>ZZ</p>' })
++    // @ts-expect-error
++    editor.commands.startSuggesting({ userId: 'u1' })
++    editor.chain().focus().insertContent('1').insertContent('2').insertContent('3').run()
++    // @ts-expect-error
++    editor.commands.rejectAll()
++    const html = editor.getHTML()
++    expect(html).to.not.contain('<ins')
++    expect(html).to.not.contain('<del')
++  })
++
++  it('stopSuggesting disables tracking; subsequent edits are not wrapped in <ins>/<del>', () => {
++    editor = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: '<p>toggle</p>' })
++    // @ts-expect-error
++    editor.commands.startSuggesting({ userId: 'u1' })
++    editor.chain().focus().insertContent('!').run()
++    let html = editor.getHTML()
++    const beforeCount = (html.match(/<ins/g) || []).length
++    // @ts-expect-error
++    editor.commands.stopSuggesting()
++    editor.chain().insertContent('?').run()
++    html = editor.getHTML()
++    const afterCount = (html.match(/<ins/g) || []).length
++    expect(afterCount).to.eq(beforeCount)
++  })
++
++  it('acceptAll accepts both insertion and deletion suggestions', () => {
++    editor = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: '<p>test</p>' })
++    // @ts-expect-error
++    editor.commands.startSuggesting({ userId: 'u1' })
++    // insert at end
++    // @ts-expect-error
++    editor.commands.setTextSelection({ from: editor.state.doc.content.size, to: editor.state.doc.content.size })
++    editor.chain().insertContent('X').run()
++    // delete the first character
++    // @ts-expect-error
++    editor.commands.setTextSelection({ from: 2, to: 3 })
++    // @ts-expect-error
++    editor.commands.deleteRange({ from: 2, to: 3 })
++    // @ts-expect-error
++    editor.commands.acceptAll()
++    const html2 = editor.getHTML()
++    expect(html2).to.not.contain('<ins')
++    expect(html2).to.not.contain('<del')
++  })
++
++  it('getChanges supports range filtering and returns only changes in [from,to)', () => {
++    editor = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: '<p>ABCD</p>' })
++    // @ts-expect-error
++    editor.commands.startSuggesting({ userId: 'u1' })
++    // insert near start
++    // @ts-expect-error
++    editor.commands.setTextSelection({ from: 1, to: 1 })
++    editor.chain().insertContent('x').run()
++    // insert near end
++    // @ts-expect-error
++    editor.commands.setTextSelection({ from: editor.state.doc.content.size, to: editor.state.doc.content.size })
++    editor.chain().insertContent('y').run()
++    // @ts-expect-error
++    const all = editor.getChanges()
++    expect(all.length).to.be.greaterThan(1)
++    // filter a small early range that should include only the first insertion
++    // @ts-expect-error
++    const early = editor.getChanges({ from: 1, to: 3 })
++    expect(early.length).to.eq(1)
++    expect(all.find((c: any) => c.id === early[0].id)).to.not.eq(undefined)
++  })
++
++  it('accept/reject works for deletion suggestions specifically', () => {
++    editor = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: '<p>DeleteMe</p>' })
++    // @ts-expect-error
++    editor.commands.startSuggesting({ userId: 'u1' })
++    // delete the substring "ete"
++    // @ts-expect-error
++    editor.commands.setTextSelection({ from: 6, to: 9 })
++    // @ts-expect-error
++    editor.commands.deleteRange({ from: 6, to: 9 })
++    let html2 = editor.getHTML()
++    expect(html2).to.contain('<del')
++    // @ts-expect-error
++    const delId = editor.getChanges()[0].id as string
++    // accept deletion -> <del> gone
++    // @ts-expect-error
++    editor.commands.acceptChange(delId)
++    html2 = editor.getHTML()
++    expect(html2).to.not.contain('<del')
++
++    // create another deletion and reject it
++    // @ts-expect-error
++    editor.commands.startSuggesting({ userId: 'u1' })
++    // @ts-expect-error
++    editor.commands.setTextSelection({ from: 3, to: 5 })
++    // @ts-expect-error
++    editor.commands.deleteRange({ from: 3, to: 5 })
++    html2 = editor.getHTML()
++    expect(html2).to.contain('<del')
++    // @ts-expect-error
++    const delId2 = editor.getChanges()[0].id as string
++    // @ts-expect-error
++    editor.commands.rejectChange(delId2)
++    html2 = editor.getHTML()
++    expect(html2).to.not.contain('<del')
++  })
++
++  it('overlapping suggestions: insert then delete a range including the inserted char; both remain distinct', () => {
++    editor = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: '<p>overlap</p>' })
++    // @ts-expect-error
++    editor.commands.startSuggesting({ userId: 'u1' })
++    // insert X after "ov"
++    // @ts-expect-error
++    editor.commands.setTextSelection({ from: 1 + 1 + 2, to: 1 + 1 + 2 })
++    editor.chain().insertContent('X').run()
++    // now delete a range that includes the newly inserted X (overlap)
++    // @ts-expect-error
++    editor.commands.deleteRange({ from: 1 + 1 + 2, to: 1 + 1 + 4 })
++    const html2 = editor.getHTML()
++    expect(html2).to.contain('<ins')
++    expect(html2).to.contain('<del')
++    // @ts-expect-error
++    const changes = editor.getChanges()
++    expect(changes.length).to.be.greaterThan(1)
++    const unique = new Set(changes.map((c: any) => c.id))
++    expect(unique.size).to.eq(changes.length)
++  })
++
++  it('suggestions map across subsequent edits and keep stable IDs', () => {
++    editor = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: '<p>map</p>' })
++    // @ts-expect-error
++    editor.commands.startSuggesting({ userId: 'u1' })
++    editor.chain().focus().insertContent('A').run()
++    // @ts-expect-error
++    const before = editor.getChanges()
++    const id = before[0].id
++    // Perform unrelated edit at doc start
++    // @ts-expect-error
++    editor.commands.setTextSelection({ from: 1, to: 1 })
++    editor.chain().insertContent('#').run()
++    // @ts-expect-error
++    const after = editor.getChanges()
++    expect(after.find((c: any) => c.id === id)).to.not.eq(undefined)
++  })
++
++  it('handles overlapping edits and complex content (marks, code block, table)', () => {
++    editor = new Editor({
++      element: createEditorEl(),
++      extensions: [Document, Text, Paragraph, Bold, CodeBlock, Table.configure({ resizable: false }), TableRow, TableHeader, TableCell, TrackChanges],
++      content: '<p><strong>bold</strong> text</p><pre><code>code</code></pre><table><tbody><tr><td>cell</td></tr></tbody></table>',
++    })
++    // @ts-expect-error
++    editor.commands.startSuggesting({ userId: 'u1' })
++    // Insert inside bold
++    // @ts-expect-error
++    editor.commands.setTextSelection({ from: 6, to: 6 })
++    editor.chain().insertContent('*').run()
++    // Insert inside code block
++    // @ts-expect-error
++    editor.commands.setTextSelection({ from: editor.state.doc.content.size - 10, to: editor.state.doc.content.size - 10 })
++    editor.chain().insertContent('!').run()
++    const html = editor.getHTML()
++    expect(html).to.contain('<ins')
++    expect(html).to.contain('<strong>')
++    expect(html).to.contain('<pre')
++    expect(html).to.contain('<table')
++  })
++
++  it('handles list content (bullet/ordered) with suggestions intact', () => {
++    editor = new Editor({
++      element: createEditorEl(),
++      extensions: [Document, Text, Paragraph, BulletList, OrderedList, ListItem, TrackChanges],
++      content: '<ul><li>item1</li><li>item2</li></ul>',
++    })
++    // @ts-expect-error
++    editor.commands.startSuggesting({ userId: 'u1' })
++    // insert inside first list item
++    // @ts-expect-error
++    editor.commands.setTextSelection({ from: 1 + 1 + 2, to: 1 + 1 + 2 })
++    editor.chain().insertContent('*').run()
++    // delete inside second list item (approximate position near end)
++    // @ts-expect-error
++    editor.commands.setTextSelection({ from: editor.state.doc.content.size - 5, to: editor.state.doc.content.size - 4 })
++    // @ts-expect-error
++    editor.commands.deleteRange({ from: editor.state.doc.content.size - 5, to: editor.state.doc.content.size - 4 })
++    const html = editor.getHTML()
++    expect(html).to.contain('<ul')
++    expect(html).to.contain('<li')
++    expect(html).to.contain('<ins')
++    expect(html).to.contain('<del')
++  })
++
++  it('getChanges range filtering excludes out-of-range suggestions', () => {
++    editor = new Editor({ element: createEditorEl(), extensions: [Document, Text, Paragraph, TrackChanges], content: '<p>Range</p>' })
++    // @ts-expect-error
++    editor.commands.startSuggesting({ userId: 'u1' })
++    // insertion near start
++    // @ts-expect-error
++    editor.commands.setTextSelection({ from: 2, to: 2 })
++    editor.chain().insertContent('a').run()
++    // insertion near end
++    // @ts-expect-error
++    editor.commands.setTextSelection({ from: editor.state.doc.content.size, to: editor.state.doc.content.size })
++    editor.chain().insertContent('b').run()
++    // @ts-expect-error
++    const earlyOnly = editor.getChanges({ from: 2, to: 4 })
++    expect(earlyOnly.length).to.eq(1)
++    // pick a middle range that excludes both
++    // @ts-expect-error
++    const none = editor.getChanges({ from: 5, to: 6 })
++    expect(none.length).to.eq(0)
++  })
++
++  it('is collaboration-ready: suggestions propagate via Yjs and preserve authorship', () => {
++    const ydoc = new Y.Doc()
++    const elA = createEditorEl()
++    const elB = createEditorEl()
++    const editorA = new Editor({ element: elA, extensions: [Document, Text, Paragraph, TrackChanges, Collaboration.configure({ document: ydoc })], content: '<p>collab</p>' })
++    const editorB = new Editor({ element: elB, extensions: [Document, Text, Paragraph, TrackChanges, Collaboration.configure({ document: ydoc })], content: '<p>collab</p>' })
++    // @ts-expect-error
++    editorA.commands.startSuggesting({ userId: 'u1', userName: 'Alice' })
++    editorA.chain().focus().insertContent('!').run()
++
++    const htmlA = editorA.getHTML()
++    const htmlB = editorB.getHTML()
++    expect(htmlA).to.contain('<ins')
++    expect(htmlB).to.contain('<ins')
++    expect(htmlB).to.contain('data-author="Alice"')
++
++    editorA.destroy(); editorB.destroy(); elA.remove(); elB.remove()
++  })
++})
++
