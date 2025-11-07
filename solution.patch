@@ -69,7 +69,37 @@ index 000000000..82266874c
 +
 +export * from './track-changes.js'
 +
-+export default TrackChanges
+ +export default TrackChanges
+ 
+ diff --git a/test.sh b/test.sh
+ index 000000000..000000001
+ --- a/test.sh
+ +++ b/test.sh
+ @@ -1,5 +1,11 @@
+  #!/bin/bash
+  set -euo pipefail
+  
+ +# Resolve repo root robustly (works when invoked from subdirs)
+ +REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ +if git rev-parse --show-toplevel >/dev/null 2>&1; then
+ +  REPO_ROOT="$(git rev-parse --show-toplevel)"
+ +fi
+ +
+  can_headless() {
+    command -v xvfb-run >/dev/null 2>&1 || command -v Xvfb >/dev/null 2>&1 || command -v docker >/dev/null 2>&1
+  }
+  
+ -is_solution_present() {
+ -  [ -f "packages/extension-track-changes/src/track-changes.ts" ] \\
+ -    || [ -f "packages/extension-track-changes/dist/index.js" ] \\
+ -    || grep -R "name: 'trackChanges'" -n packages/extension-track-changes/src >/dev/null 2>&1
+ -}
+ +is_solution_present() {
+ +  local root="${REPO_ROOT:-$(pwd)}"
+ +  [ -f "$root/packages/extension-track-changes/src/track-changes.ts" ] \\
+ +    || [ -f "$root/packages/extension-track-changes/dist/index.js" ] \\
+ +    || grep -R "name: 'trackChanges'" -n "$root/packages/extension-track-changes/src" >/dev/null 2>&1
+ +}
 
 
 diff --git a/packages/extension-track-changes/src/track-changes.ts b/packages/extension-track-changes/src/track-changes.ts
